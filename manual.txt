@@ -1,0 +1,26 @@
+docker run -d -it 
+
+docker run -d -it --name torch2.0 --gpus all --ipc=host -v C:/Users/YunJunSeok/Desktop/codes/segment-anything-finetuner-main:/root -p 8880:8880 yjs:0.1
+
+
+docker run -d -it --name medsam --gpus all --ipc=host -v C:/Users/YunJunSeok/Desktop/codes/MedSAM:/root yjs:0.1
+
+
+sh train_multi_gpus.sh
+
+
+When the training process is done, please convert the checkpoint to SAM's format for convenient inference.
+
+python utils/ckpt_convert.py # Please set the corresponding checkpoint path first
+
+
+python pre_CT_MR.py
+
+
+python train_one_gpu.py
+
+
+python -m torch.distributed.launch --nproc_per_node=2 --nnodes=1 train_multi_gpus.py -task_name MedSAM-ViT-B-20GPUs work_dir ./work_dir -batch_size 8 -num_workers 8
+
+
+python MedSAM_Inference.py -i ./data/Test -o ./ -chk work_dir/MedSAM/medsam_vit_b.pth
