@@ -4,12 +4,16 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "Python Debugger: Current File",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal"
+            "module": "torch.distributed.launch",
+            "console": "integratedTerminal",
+            "args": ["--nproc_per_node", "2",
+                     "train_multi_gpu_yjs.py" 
+        ]
         }
     ]
 }

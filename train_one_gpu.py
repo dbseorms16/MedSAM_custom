@@ -164,7 +164,7 @@ parser.add_argument("-pretrain_model_path", type=str, default="work_dir/MedSAM-V
 parser.add_argument("-work_dir", type=str, default="./work_dir")
 # train
 parser.add_argument("-num_epochs", type=int, default=1000)
-parser.add_argument("-batch_size", type=int, default=2)
+parser.add_argument("-batch_size", type=int, default=4)
 parser.add_argument("-num_workers", type=int, default=0)
 # Optimizer parameters
 parser.add_argument(
@@ -218,6 +218,8 @@ class MedSAM(nn.Module):
         self.prompt_encoder = prompt_encoder
         # freeze prompt encoder
         for param in self.prompt_encoder.parameters():
+            param.requires_grad = False
+        for param in self.image_encoder.parameters():
             param.requires_grad = False
 
     def forward(self, image, box):

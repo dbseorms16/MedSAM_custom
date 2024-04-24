@@ -17,10 +17,15 @@ python utils/ckpt_convert.py # Please set the corresponding checkpoint path firs
 python pre_CT_MR.py
 
 
-python train_one_gpu.py
+python train_with_npz.py
 
 
 python -m torch.distributed.launch --nproc_per_node=2 --nnodes=1 train_multi_gpus.py -task_name MedSAM-ViT-B-20GPUs work_dir ./work_dir -batch_size 8 -num_workers 8
 
 
 python MedSAM_Inference.py -i ./data/Test -o ./ -chk work_dir/MedSAM/medsam_vit_b.pth
+
+
+train_with_npz
+
+python -m torch.distributed.launch --nproc_per_node=2 train_multi_gpu_yjs.py
