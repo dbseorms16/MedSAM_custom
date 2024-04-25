@@ -51,47 +51,69 @@ def show_box(box, ax):
 class NpyDataset(Dataset):
     def __init__(self, data_root, bbox_shift=20):
         self.data_root = data_root
-        self.gt_path = join(data_root, "gts")
-        self.img_path = join(data_root, "imgs")
-        self.gt_path_files = sorted(
-            glob.glob(join(self.gt_path, "**/*.npy"), recursive=True)
-        )
-        self.gt_path_files = [
-            file
-            for file in self.gt_path_files
-            if os.path.isfile(join(self.img_path, os.path.basename(file)))
-        ]
+        self.img_path_files = []
+        self.gt_path_files = []
+        folders = sorted(os.listdir(self.data_root))
+        for folder in folders:
+            self.img_path = join(data_root, folder, "MRI")
+            self.gt_path = join(data_root, folder, "Mask")
+            
+            img_path_file = sorted(
+                glob.glob(join(self.img_path, "**/*.tif"), recursive=True)
+            )
+            gt_path_file = sorted(
+                glob.glob(join(self.gt_path, "**/*.tif"), recursive=True)
+            )
+
+            self.img_path_files.extend(img_path_file)
+            self.gt_path_files.extend(gt_path_file)
         self.bbox_shift = bbox_shift
-        print(f"number of images: {len(self.gt_path_files)}")
+        print(f"number of images: {len(self.img_path_files)}")
 
     def __len__(self):
-        return len(self.gt_path_files)
+        return len(self.img_path_files)
 
     def __getitem__(self, index):
         # load npy image (1024, 1024, 3), [0,1]
-        img_name = os.path.basename(self.gt_path_files[index])
-        img_1024 = np.load(
-            join(self.img_path, img_name), "r", allow_pickle=True
-        )  # (1024, 1024, 3)
+        # img_name = os.path.basename(self.img_path_files[index])
+        # mask_name = os.path.basename(self.gt_path_files[index])
+        
+        resize_img = np.array(Image.open(join(self.img_path_files[index])).convert("L").resize((1024,1024)))
+        gt2D = np.array(Image.open(join(self.gt_path_files[index])).convert("L").resize((1024,1024)))
+        img_1024 = (resize_img - resize_img.min()) / np.clip(resize_img.max() - resize_img.min(), a_min=1e-8, a_max=None) # normalize to [0, 1], (H, W, 3)
+        img_1024 = np.repeat(img_1024[:, :, None], 3, axis=-1)
+        
         # convert the shape to (3, H, W)
         img_1024 = np.transpose(img_1024, (2, 0, 1))
         assert (
             np.max(img_1024) <= 1.0 and np.min(img_1024) >= 0.0
         ), "image should be normalized to [0, 1]"
-        gt = np.load(
-            self.gt_path_files[index], "r", allow_pickle=True
-        )  # multiple labels [0, 1,4,5...], (256,256)
-        assert img_name == os.path.basename(self.gt_path_files[index]), (
-            "img gt name error" + self.gt_path_files[index] + self.npy_files[index]
-        )
-        label_ids = np.unique(gt)[1:]
-        gt2D = np.uint8(
-            gt == random.choice(label_ids.tolist())
-        )  # only one label, (256, 256)
 
-        assert np.max(gt2D) == 1 and np.min(gt2D) == 0.0, "ground truth should be 0, 1"
-        y_indices, x_indices = np.where(gt2D > 0)
-        x_min, x_max = np.min(x_indices), np.max(x_indices)
+        h_mask_np = np.where(gt2D > 1, 1, 0)
+        gt2D = np.zeros_like(h_mask_np)
+        
+        select = random.randint(0, 1)
+        H, W = gt2D.shape
+        if select == 0:
+            gt2D[:, 0:W//2] = h_mask_np[:, 0 : W//2]
+        else:
+            gt2D[:, W//2:] = h_mask_np[:, W//2:]
+        
+        try: 
+            y_indices, x_indices = np.where(gt2D > 0)
+            x_min, x_max = np.min(x_indices), np.max(x_indices)
+            # , "ground truth should be 0, 1"
+        except:
+            if select == 0:
+                gt2D[:, W//2:] = h_mask_np[:, W//2:]
+            else:
+                gt2D[:, 0:W//2] = h_mask_np[:, 0 : W//2]
+            
+            newgt2D = gt2D
+            y_indices, x_indices = np.where(gt2D > 0)
+            x_min, x_max = np.min(x_indices), np.max(x_indices)
+            
+
         y_min, y_max = np.min(y_indices), np.max(y_indices)
         # add perturbation to bounding box coordinates
         H, W = gt2D.shape
@@ -104,36 +126,8 @@ class NpyDataset(Dataset):
             torch.tensor(img_1024).float(),
             torch.tensor(gt2D[None, :, :]).long(),
             torch.tensor(bboxes).float(),
-            img_name,
         )
 
-
-# %% sanity test of dataset class
-tr_dataset = NpyDataset("data/npy/CT_Abd")
-tr_dataloader = DataLoader(tr_dataset, batch_size=8, shuffle=True)
-for step, (image, gt, bboxes, names_temp) in enumerate(tr_dataloader):
-    print(image.shape, gt.shape, bboxes.shape)
-    # show the example
-    _, axs = plt.subplots(1, 2, figsize=(25, 25))
-    idx = random.randint(0, 7)
-    axs[0].imshow(image[idx].cpu().permute(1, 2, 0).numpy())
-    show_mask(gt[idx].cpu().numpy(), axs[0])
-    show_box(bboxes[idx].numpy(), axs[0])
-    axs[0].axis("off")
-    # set title
-    axs[0].set_title(names_temp[idx])
-    idx = random.randint(0, 7)
-    axs[1].imshow(image[idx].cpu().permute(1, 2, 0).numpy())
-    show_mask(gt[idx].cpu().numpy(), axs[1])
-    show_box(bboxes[idx].numpy(), axs[1])
-    axs[1].axis("off")
-    # set title
-    axs[1].set_title(names_temp[idx])
-    # plt.show()
-    plt.subplots_adjust(wspace=0.01, hspace=0)
-    plt.savefig("./data_sanitycheck.png", bbox_inches="tight", dpi=300)
-    plt.close()
-    break
 
 # %% set up parser
 parser = argparse.ArgumentParser()
@@ -141,7 +135,7 @@ parser.add_argument(
     "-i",
     "--tr_npy_path",
     type=str,
-    default="data/npy/CT_Abd",
+    default="data/Custom_data_train",
     help="path to training npy files; two subfolders: gts and imgs",
 )
 parser.add_argument("-task_name", type=str, default="MedSAM-ViT-B")
@@ -153,11 +147,11 @@ parser.add_argument(
 parser.add_argument(
     "--load_pretrain", type=bool, default=True, help="use wandb to monitor training"
 )
-parser.add_argument("-pretrain_model_path", type=str, default="")
+parser.add_argument("-pretrain_model_path", type=str, default="work_dir/medsam_vit_b.pth")
 parser.add_argument("-work_dir", type=str, default="./work_dir")
 # train
 parser.add_argument("-num_epochs", type=int, default=1000)
-parser.add_argument("-batch_size", type=int, default=8)
+parser.add_argument("-batch_size", type=int, default=2)
 parser.add_argument("-num_workers", type=int, default=8)
 # Optimizer parameters
 parser.add_argument(
@@ -171,8 +165,6 @@ parser.add_argument(
 )
 parser.add_argument("-use_amp", action="store_true", default=False, help="use amp")
 ## Distributed training args
-parser.add_argument("--world_size", type=int, help="world size")
-parser.add_argument("--node_rank", type=int, default=0, help="Node rank")
 parser.add_argument(
     "--bucket_cap_mb",
     type=int,
@@ -227,7 +219,9 @@ class MedSAM(nn.Module):
         # freeze prompt encoder
         for param in self.prompt_encoder.parameters():
             param.requires_grad = False
-
+        for param in self.image_encoder.parameters():
+            param.requries_grad = False
+            
     def forward(self, image, box):
         image_embedding = self.image_encoder(image)  # (B, 256, 64, 64)
         # do not compute gradients for prompt encoder
@@ -264,9 +258,8 @@ def main():
 
 
 def main_worker(gpu, ngpus_per_node, args):
-    node_rank = int(args.node_rank)
-    rank = node_rank * ngpus_per_node + gpu
-    world_size = args.world_size
+    rank = gpu
+    world_size = ngpus_per_node
     print(f"[Rank {rank}]: Use GPU: {gpu} for training")
     is_main_host = rank == 0
     if is_main_host:
@@ -277,7 +270,7 @@ def main_worker(gpu, ngpus_per_node, args):
     torch.cuda.set_device(gpu)
     # device = torch.device("cuda:{}".format(gpu))
     torch.distributed.init_process_group(
-        backend="nccl", init_method=args.init_method, rank=rank, world_size=world_size
+        backend="nccl", init_method='tcp://127.0.0.1:3456', rank=rank, world_size=world_size
     )
 
     sam_model = sam_model_registry[args.model_type](checkpoint=args.checkpoint)
@@ -394,7 +387,7 @@ def main_worker(gpu, ngpus_per_node, args):
     for epoch in range(start_epoch, num_epochs):
         epoch_loss = 0
         train_dataloader.sampler.set_epoch(epoch)
-        for step, (image, gt2D, boxes, _) in enumerate(
+        for step, (image, gt2D, boxes) in enumerate(
             tqdm(train_dataloader, desc=f"[RANK {rank}: GPU {gpu}]")
         ):
             optimizer.zero_grad()
