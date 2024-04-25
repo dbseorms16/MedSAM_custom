@@ -24,6 +24,7 @@ import random
 from datetime import datetime
 import shutil
 import glob
+from PIL import Image
 
 # set seeds
 torch.manual_seed(2023)
