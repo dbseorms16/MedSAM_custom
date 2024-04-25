@@ -34,7 +34,7 @@ torch.cuda.empty_cache()
 
 # torch.distributed.init_process_group(backend="gloo")
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0,1'
 os.environ["OMP_NUM_THREADS"] = "4"  # export OMP_NUM_THREADS=4
 os.environ["OPENBLAS_NUM_THREADS"] = "4"  # export OPENBLAS_NUM_THREADS=4
 os.environ["MKL_NUM_THREADS"] = "6"  # export MKL_NUM_THREADS=6
@@ -250,27 +250,28 @@ class MedSAM(nn.Module):
         return ori_res_masks
 
 
-def main():
+def main(gpu, ngpus_per_node):
+
+    torch.distributed.init_process_group(
+            backend='nccl',
+            init_method='tcp://127.0.0.1:3456',
+            world_size=ngpus_per_node,
+            rank=gpu)
+    
     os.makedirs(model_save_path, exist_ok=True)
     shutil.copyfile(
         __file__, join(model_save_path, run_id + "_" + os.path.basename(__file__))
     )
-
+    
     sam_model = sam_model_registry[args.model_type](checkpoint=args.checkpoint)
-    medsam_model = nn.DataParallel(MedSAM(
+    medsam_model = MedSAM(
         image_encoder=sam_model.image_encoder,
         mask_decoder=sam_model.mask_decoder,
         prompt_encoder=sam_model.prompt_encoder,
-    ), device_ids= [0])
-    device =f'cuda:{medsam_model.device_ids[0]}'
-    
-    medsam_model.to(device)
-    # medsam_model = MedSAM(
-    #     image_encoder=sam_model.image_encoder,
-    #     mask_decoder=sam_model.mask_decoder,
-    #     prompt_encoder=sam_model.prompt_encoder,
-    # ).to(device)
-        
+    )
+    torch.cuda.set_device(gpu)
+    medsam_model = medsam_model.cuda(gpu)       
+    medsam_model = nn.DataParallel(medsam_model, device_ids= [gpu])
     medsam_model.train()
 
     print(
@@ -292,9 +293,9 @@ def main():
         "Number of image encoder and mask decoder parameters: ",
         sum(p.numel() for p in img_mask_encdec_params if p.requires_grad),
     )  # 93729252
-    seg_loss = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, reduction="mean")
+    seg_loss = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, reduction="mean").to(gpu)
     # cross entropy loss
-    ce_loss = nn.BCEWithLogitsLoss(reduction="mean")
+    ce_loss = nn.BCEWithLogitsLoss(reduction="mean").to(gpu)
     # %% train
     num_epochs = args.num_epochs
     iter_num = 0
@@ -303,10 +304,12 @@ def main():
     train_dataset = NpyDataset(args.tr_npy_path)
 
     print("Number of training samples: ", len(train_dataset))
+    batch_size = int(args.batch_size / ngpus_per_node)
+    num_workers = int(args.num_workers / ngpus_per_node)
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        batch_size=batch_size,
+        num_workers=num_workers,
         pin_memory=True,
         sampler=DistributedSampler(train_dataset, shuffle=True)
     )
@@ -322,11 +325,13 @@ def main():
     if args.use_amp:
         scaler = torch.cuda.amp.GradScaler()
 
+    tqdm_test = tqdm(train_dataloader)
     for epoch in range(start_epoch, num_epochs):
         epoch_loss = 0
-        for step, (image, gt2D, boxes) in enumerate(tqdm(train_dataloader)):
+        
+        for step, (image, gt2D, boxes) in enumerate(tqdm_test):
             optimizer.zero_grad()
-            image, gt2D = image.to(device), gt2D.to(device)
+            image, gt2D = image.to(gpu), gt2D.to(gpu)
             if args.use_amp:
                 ## AMP
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
@@ -383,14 +388,8 @@ def main():
 
 
 if __name__ == "__main__":
-    dist_url = 'env://'
-    rank = int(os.environ['RANK'])
-    world_size = int(os.environ['WORLD_SIZE'])
-    local_rank = int(os.environ['LOCAL_RANK'])
-        
-    dist.init_process_group("nccl", init_method=dist_url, world_size=world_size, rank=rank)
-    torch.cuda.set_device(local_rank)
-    dist.barrier()
-    if dist.get_rank()  == 0:
-        print(f'RANK {rank}, WORLD_SIZE {world_size}, LOCAL_RANK {local_rank}')
-    main()
+    
+    ngpus_per_node = torch.cuda.device_count()
+    world_size = ngpus_per_node
+ 
+    torch.multiprocessing.spawn(main, nprocs=ngpus_per_node, args=(ngpus_per_node, ))

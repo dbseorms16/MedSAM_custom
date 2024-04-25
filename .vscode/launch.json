@@ -12,7 +12,7 @@
             "module": "torch.distributed.launch",
             "console": "integratedTerminal",
             "args": ["--nproc_per_node", "2",
-                     "train_multi_gpu_yjs.py" 
+                     "train_multi_gpu_test.py" 
         ]
         }
     ]
